@@ -8,6 +8,8 @@ import (
 )
 
 type Config struct {
+	Account               string        `json:"account"`
+	Password              string        `json:"password"`
 	Name                  string        `json:"name"`
 	Proxy                 Proxy         `json:"proxy"`
 	Api                   api.ApiConfig `json:"api"`
@@ -35,7 +37,7 @@ type Proxy struct {
 	LimitBodySize        int64  `json:"limitBodySize"`
 	BehindReverseProxy   bool   `json:"behindReverseProxy"`
 	BlockRefreshInterval string `json:"blockRefreshInterval"`
-	Difficulty           int64  `json:"difficulty"`
+	//Difficulty           int64  `json:"difficulty"`
 	StateUpdateInterval  string `json:"stateUpdateInterval"`
 	HashrateExpiration   string `json:"hashrateExpiration"`
 
@@ -44,13 +46,14 @@ type Proxy struct {
 	MaxFails    int64 `json:"maxFails"`
 	HealthCheck bool  `json:"healthCheck"`
 
-	Stratum Stratum `json:"stratum"`
+	Stratums []Stratum `json:"stratums"`
 }
 
 type Stratum struct {
 	Enabled bool   `json:"enabled"`
 	Listen  string `json:"listen"`
 	Timeout string `json:"timeout"`
+	Difficulty           int64  `json:"difficulty"`
 	MaxConn int    `json:"maxConn"`
 }
 

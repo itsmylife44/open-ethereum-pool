@@ -6,7 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
+	//"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,24 +19,39 @@ import (
 	"github.com/sammy007/open-ethereum-pool/util"
 )
 
+type StratumServer struct {
+	sessionsMu sync.RWMutex
+	sessions   map[*Session]struct{}
+	timeout    time.Duration
+	diff               string
+}
+
 type ProxyServer struct {
 	config             *Config
 	blockTemplate      atomic.Value
 	upstream           int32
 	upstreams          []*rpc.RPCClient
 	backend            *storage.RedisClient
-	diff               string
+	//diff               string
 	policy             *policy.PolicyServer
 	hashrateExpiration time.Duration
 	failsCount         int64
 
+	/*
 	// Stratum
 	sessionsMu sync.RWMutex
 	sessions   map[*Session]struct{}
 	timeout    time.Duration
+	*/
+
+	// Stratums
+	stratums []*StratumServer
 }
 
 type Session struct {
+	// the statum instance id
+	stratum_id int
+
 	ip  string
 	enc *json.Encoder
 
@@ -53,18 +68,22 @@ func NewProxy(cfg *Config, backend *storage.RedisClient) *ProxyServer {
 	policy := policy.Start(&cfg.Proxy.Policy, backend)
 
 	proxy := &ProxyServer{config: cfg, backend: backend, policy: policy}
-	proxy.diff = util.GetTargetHex(cfg.Proxy.Difficulty)
+	//proxy.diff = util.GetTargetHex(cfg.Proxy.Difficulty)
 
 	proxy.upstreams = make([]*rpc.RPCClient, len(cfg.Upstream))
 	for i, v := range cfg.Upstream {
-		proxy.upstreams[i] = rpc.NewRPCClient(v.Name, v.Url, v.Timeout)
+		proxy.upstreams[i] = rpc.NewRPCClient(v.Name, v.Url, cfg.Account, cfg.Password, v.Timeout)
 		log.Printf("Upstream: %s => %s", v.Name, v.Url)
 	}
 	log.Printf("Default upstream: %s => %s", proxy.rpc().Name, proxy.rpc().Url)
-
-	if cfg.Proxy.Stratum.Enabled {
-		proxy.sessions = make(map[*Session]struct{})
-		go proxy.ListenTCP()
+	proxy.stratums = make([]*StratumServer, len(cfg.Proxy.Stratums))
+	log.Printf("Total StratumServer count: %d", len(cfg.Proxy.Stratums))
+	for i, st := range cfg.Proxy.Stratums {
+		stratumserver := StratumServer{sessions: make(map[*Session]struct{}), diff: util.GetTargetHex(st.Difficulty)}
+		proxy.stratums[i] = &stratumserver
+		if st.Enabled {
+			go proxy.ListenTCP(i)
+		}
 	}
 
 	proxy.fetchBlockTemplate()
@@ -128,6 +147,7 @@ func (s *ProxyServer) Start() {
 	r := mux.NewRouter()
 	r.Handle("/{login:0x[0-9a-fA-F]{40}}/{id:[0-9a-zA-Z-_]{1,8}}", s)
 	r.Handle("/{login:0x[0-9a-fA-F]{40}}", s)
+	r.Handle("/{login:[0-9a-zA-Z]{27,34}}", s)
 	srv := &http.Server{
 		Addr:           s.config.Proxy.Listen,
 		Handler:        r,
@@ -193,7 +213,8 @@ func (s *ProxyServer) handleClient(w http.ResponseWriter, r *http.Request, ip st
 	r.Body = http.MaxBytesReader(w, r.Body, s.config.Proxy.LimitBodySize)
 	defer r.Body.Close()
 
-	cs := &Session{ip: ip, enc: json.NewEncoder(w)}
+	// use the first stratum diffculty as the proxy diffculty
+	cs := &Session{stratum_id: 0, ip: ip, enc: json.NewEncoder(w)}
 	dec := json.NewDecoder(r.Body)
 	for {
 		var req JSONRpcReq
@@ -216,13 +237,8 @@ func (cs *Session) handleMessage(s *ProxyServer, r *http.Request, req *JSONRpcRe
 	}
 
 	vars := mux.Vars(r)
-	login := strings.ToLower(vars["login"])
+	login := vars["login"]
 
-	if !util.IsValidHexAddress(login) {
-		errReply := &ErrorReply{Code: -1, Message: "Invalid login"}
-		cs.sendError(req.Id, errReply)
-		return
-	}
 	if !s.policy.ApplyLoginPolicy(login, cs.ip) {
 		errReply := &ErrorReply{Code: -1, Message: "You are blacklisted"}
 		cs.sendError(req.Id, errReply)
@@ -241,7 +257,7 @@ func (cs *Session) handleMessage(s *ProxyServer, r *http.Request, req *JSONRpcRe
 	case "eth_submitWork":
 		if req.Params != nil {
 			var params []string
-			err := json.Unmarshal(req.Params, &params)
+			err := json.Unmarshal(*req.Params, &params)
 			if err != nil {
 				log.Printf("Unable to parse params from %v", cs.ip)
 				s.policy.ApplyMalformedPolicy(cs.ip)
@@ -258,6 +274,7 @@ func (cs *Session) handleMessage(s *ProxyServer, r *http.Request, req *JSONRpcRe
 			errReply := &ErrorReply{Code: -1, Message: "Malformed request"}
 			cs.sendError(req.Id, errReply)
 		}
+
 	case "eth_getBlockByNumber":
 		reply := s.handleGetBlockByNumberRPC()
 		cs.sendResult(req.Id, reply)
@@ -269,12 +286,12 @@ func (cs *Session) handleMessage(s *ProxyServer, r *http.Request, req *JSONRpcRe
 	}
 }
 
-func (cs *Session) sendResult(id json.RawMessage, result interface{}) error {
+func (cs *Session) sendResult(id *json.RawMessage, result interface{}) error {
 	message := JSONRpcResp{Id: id, Version: "2.0", Error: nil, Result: result}
 	return cs.enc.Encode(&message)
 }
 
-func (cs *Session) sendError(id json.RawMessage, reply *ErrorReply) error {
+func (cs *Session) sendError(id *json.RawMessage, reply *ErrorReply) error {
 	message := JSONRpcResp{Id: id, Version: "2.0", Error: reply}
 	return cs.enc.Encode(&message)
 }

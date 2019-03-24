@@ -3,7 +3,7 @@ package proxy
 import (
 	"log"
 	"regexp"
-	"strings"
+	//"strings"
 
 	"github.com/sammy007/open-ethereum-pool/rpc"
 	"github.com/sammy007/open-ethereum-pool/util"
@@ -20,8 +20,8 @@ func (s *ProxyServer) handleLoginRPC(cs *Session, params []string, id string) (b
 		return false, &ErrorReply{Code: -1, Message: "Invalid params"}
 	}
 
-	login := strings.ToLower(params[0])
-	if !util.IsValidHexAddress(login) {
+	login := params[0]
+	if !util.IsValidBitcoinAddress(login) {
 		return false, &ErrorReply{Code: -1, Message: "Invalid login"}
 	}
 	if !s.policy.ApplyLoginPolicy(login, cs.ip) {
@@ -38,14 +38,15 @@ func (s *ProxyServer) handleGetWorkRPC(cs *Session) ([]string, *ErrorReply) {
 	if t == nil || len(t.Header) == 0 || s.isSick() {
 		return nil, &ErrorReply{Code: 0, Message: "Work not ready"}
 	}
-	return []string{t.Header, t.Seed, s.diff}, nil
+	diff := s.stratums[cs.stratum_id].diff
+	return []string{t.Header, t.Seed, diff}, nil
 }
 
 // Stratum
 func (s *ProxyServer) handleTCPSubmitRPC(cs *Session, id string, params []string) (bool, *ErrorReply) {
-	s.sessionsMu.RLock()
-	_, ok := s.sessions[cs]
-	s.sessionsMu.RUnlock()
+	s.stratums[cs.stratum_id].sessionsMu.RLock()
+	_, ok := s.stratums[cs.stratum_id].sessions[cs]
+	s.stratums[cs.stratum_id].sessionsMu.RUnlock()
 
 	if !ok {
 		return false, &ErrorReply{Code: 25, Message: "Not subscribed"}
@@ -69,7 +70,7 @@ func (s *ProxyServer) handleSubmitRPC(cs *Session, login, id string, params []st
 		return false, &ErrorReply{Code: -1, Message: "Malformed PoW result"}
 	}
 	t := s.currentBlockTemplate()
-	exist, validShare := s.processShare(login, id, cs.ip, t, params)
+	exist, validShare := s.processShare(login, id, cs.ip, t, params, cs.stratum_id)
 	ok := s.policy.ApplySharePolicy(cs.ip, !exist && validShare)
 
 	if exist {
